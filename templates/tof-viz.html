@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ToF Camera Visualization</title>
+    <!-- Load React dependencies -->
+    <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+    <!-- Add Babel for JSX support -->
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 20px; 
+            background: #f5f5f5; 
+            font-family: Arial, sans-serif;
+        }
+        .tof-container { 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-left: 8px;
+        }
+        .status-active {
+            background-color: #28a745;
+        }
+        .status-inactive {
+            background-color: #dc3545;
+        }
+        .legend {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 15px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-right: 15px;
+        }
+        .legend-color {
+            width: 15px;
+            height: 15px;
+            margin-right: 5px;
+            border-radius: 2px;
+        }
+        .controls {
+            margin: 15px 0;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Add a loading message -->
+    <div id="root">Loading ToF camera visualization...</div>
+
+    <!-- Updated static path to match the blueprint configuration -->
+    <script type="text/babel" src="/static/tof-viz/tof-viz.js"></script>
+    
+    <!-- Add error handling -->
+    <script>
+        window.onerror = function(msg, url, lineNo, columnNo, error) {
+            console.error('Error: ' + msg + '\nURL: ' + url + '\nLine: ' + lineNo);
+            document.getElementById('root').innerHTML = 
+                `<div style="color: red;">
+                    Error loading visualization: ${msg}<br>
+                    Check browser console for details.
+                </div>`;
+            return false;
+        };
+    </script>
+</body>
+</html>
