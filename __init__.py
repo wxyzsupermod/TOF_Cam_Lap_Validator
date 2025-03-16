@@ -411,7 +411,6 @@ def initialize(rhapi):
     # Import required modules
     try:
         import ArducamDepthCamera as ac
-        print(f"ArducamDepthCamera SDK version: {ac.__version__}")
     except ImportError:
         print("ArducamDepthCamera module not found. Please install it:")
         print("pip install ArducamDepthCamera")
