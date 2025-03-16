@@ -42,7 +42,12 @@ class ToFValidator:
         min_pixels_field = UIField('detection_min_pixels', 'Min Detection Pixels', UIFieldType.BASIC_INT,
                    value='10',
                    desc='Minimum number of pixels below threshold to trigger detection')
-
+        
+        enable_filtering_field = UIField('enable_filtering', 'Enable Lap Validation', UIFieldType.CHECKBOX,
+             value='True',
+             desc='Enable ToF camera validation of laps (uncheck to disable validation)')
+        
+        
         # Register all options
         self.rhapi.fields.register_option(connection_field, 'tof_control')
         self.rhapi.fields.register_option(confidence_field, 'tof_control')
@@ -61,6 +66,8 @@ class ToFValidator:
                                          'Calibrate', self.calibrate)
         self.rhapi.ui.register_quickbutton('tof_control', 'view_tof',
                                          'View Camera', self.open_visualization)
+        self.rhapi.ui.register_quickbutton('tof_control', 'toggle_filtering',
+                                   'Toggle Validation', self.toggle_lap_validation)
         
         # Register event handlers
         self.rhapi.events.on(Evt.RACE_LAP_RECORDED, self.on_lap_recorded)
@@ -263,6 +270,28 @@ class ToFValidator:
                 
         except Exception as e:
             self.rhapi.ui.message_alert(f'Error processing depth frame: {str(e)}')
+    
+    def toggle_lap_validation(self, args=None):
+        """Toggle lap validation on/off."""
+        try:
+            # Get current setting
+            current_setting = self.rhapi.db.option('enable_filtering')
+            
+            # Convert to boolean and toggle
+            is_enabled = current_setting.lower() == 'true'
+            new_setting = 'False' if is_enabled else 'True'
+            
+            # Save new setting
+            self.rhapi.db.option_set('enable_filtering', new_setting)
+            
+            # Notify user
+            status = "disabled" if is_enabled else "enabled"
+            self.rhapi.ui.message_notify(f'Lap validation {status}')
+            
+            return True
+        except Exception as e:
+            self.rhapi.ui.message_alert(f'Error toggling validation: {str(e)}')
+            return False
 
     def open_visualization(self, args=None):
         """Open the ToF visualization."""
@@ -275,9 +304,15 @@ class ToFValidator:
     
     def on_lap_recorded(self, args):
         """Handler for lap recording events."""
+        
         if not self.is_running or not self.last_detection_time:
             return
-
+        filtering_enabled = self.rhapi.db.option('enable_filtering', 'True').lower() == 'true'
+    
+        if not filtering_enabled:
+            # Lap validation is disabled, no filtering needed
+            return
+        
         lap_time = args.get('lap').lap_time_stamp if args.get('lap') else 0
 
         # Compare timestamps
