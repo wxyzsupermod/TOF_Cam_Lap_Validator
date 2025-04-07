@@ -399,48 +399,87 @@ If you're seeing I/O errors:
                         self.rhapi.ui.message_alert('Failed to initialize sensor with direct I2C')
                 
                 else:
-                    # Use the VL53L1X library
+                    # Use the VL53L1X library with better adaptation to different versions
                     try:
                         # Initialize sensor
                         self.rhapi.ui.message_notify('Using VL53L1X library...')
                         
-                        # Try different initialization approaches
-                        sensor = None
-                        try:
-                            sensor = VL53L1X(i2c_bus=self.bus)
-                            self.rhapi.ui.message_notify('First method succeeded')
-                        except Exception as e:
-                            self.rhapi.ui.message_notify(f'First method failed: {str(e)}')
-                            
-                            try:
-                                sensor = VL53L1X(i2c_dev=self.bus)
-                                self.rhapi.ui.message_notify('Second method succeeded')
-                            except Exception as e2:
-                                self.rhapi.ui.message_notify(f'Second method failed: {str(e2)}')
-                                
-                                try:
-                                    sensor = VL53L1X()
-                                    self.rhapi.ui.message_notify('Third method succeeded')
-                                except Exception as e3:
-                                    self.rhapi.ui.message_notify(f'Third method failed: {str(e3)}')
-                                    self.rhapi.ui.message_alert('All initialization methods failed')
-                                    raise Exception("Could not initialize VL53L1X sensor with any method") from e
+                        # Check which methods are available in the library
+                        self.rhapi.ui.message_notify('Probing VL53L1X library capabilities...')
                         
-                        if sensor:
+                        # Try to import the module
+                        import VL53L1X as VL53L1X_module
+                        
+                        # Create an instance without any parameters first
+                        sensor = VL53L1X()
+                        self.rhapi.ui.message_notify('Created VL53L1X instance')
+                        
+                        # Check which methods are available
+                        has_timing_budget = hasattr(sensor, 'set_timing_budget_in_ms')
+                        has_measurement_timing = hasattr(sensor, 'set_inter_measurement_in_ms')
+                        has_open = hasattr(sensor, 'open')
+                        has_start_ranging = hasattr(sensor, 'start_ranging')
+                        
+                        self.rhapi.ui.message_notify(f'Library capabilities: open={has_open}, '
+                                                      f'timing_budget={has_timing_budget}, '
+                                                      f'measurement_timing={has_measurement_timing}, '
+                                                      f'start_ranging={has_start_ranging}')
+                        
+                        # If open() exists, call it
+                        if has_open:
                             sensor.open()
-                            # Set timing budget (33ms is default)
+                            self.rhapi.ui.message_notify('Opened sensor')
+                        
+                        # If set_timing_budget_in_ms exists, call it
+                        if has_timing_budget:
                             sensor.set_timing_budget_in_ms(33)
-                            # Set inter-measurement period (must be >= timing budget)
+                            self.rhapi.ui.message_notify('Set timing budget')
+                        elif hasattr(sensor, 'set_timing_budget'):
+                            sensor.set_timing_budget(33)
+                            self.rhapi.ui.message_notify('Set timing budget (alternate method)')
+                        
+                        # If set_inter_measurement_in_ms exists, call it
+                        if has_measurement_timing:
                             sensor.set_inter_measurement_in_ms(33)
-                            # Start ranging
+                            self.rhapi.ui.message_notify('Set inter-measurement period')
+                        elif hasattr(sensor, 'set_intermeasurement_period'):
+                            sensor.set_intermeasurement_period(33)
+                            self.rhapi.ui.message_notify('Set inter-measurement period (alternate method)')
+                        
+                        # If start_ranging exists, call it
+                        if has_start_ranging:
                             sensor.start_ranging()
+                            self.rhapi.ui.message_notify('Started ranging')
+                        elif hasattr(sensor, 'start_ranging_continuous_mode'):
+                            sensor.start_ranging_continuous_mode()
+                            self.rhapi.ui.message_notify('Started ranging (continuous mode)')
+                        elif hasattr(sensor, 'start_distance_mode_continuous'):
+                            sensor.start_distance_mode_continuous()
+                            self.rhapi.ui.message_notify('Started ranging (distance mode continuous)')
+                        
+                        # Create custom adapter methods to standardize the interface
+                        if not has_start_ranging:
+                            # Add compatibility layer
+                            self.rhapi.ui.message_notify('Adding compatibility layer')
+                            sensor.check_for_data_ready = lambda: True  # Always assume data is ready
                             
-                            # Store the sensor
-                            self.sensors.append({
-                                'channel': -1,  # -1 indicates direct mode
-                                'sensor': sensor
-                            })
-                            self.rhapi.ui.message_notify('Initialized single ToF sensor in direct mode')
+                            if hasattr(sensor, 'get_distance'):
+                                original_get_distance = sensor.get_distance
+                                def get_distance_wrapper():
+                                    return original_get_distance()
+                                sensor.get_distance = get_distance_wrapper
+                                
+                            if hasattr(sensor, 'clear_interrupt'):
+                                pass  # Already exists
+                            else:
+                                sensor.clear_interrupt = lambda: None  # No-op
+                        
+                        # Store the sensor
+                        self.sensors.append({
+                            'channel': -1,  # -1 indicates direct mode
+                            'sensor': sensor
+                        })
+                        self.rhapi.ui.message_notify('Initialized single ToF sensor in direct mode')
                     except Exception as e:
                         self.rhapi.ui.message_alert(f'Failed to initialize sensor in direct mode: {str(e)}')
                     
@@ -691,25 +730,44 @@ If you're seeing I/O errors:
                                     
                         # Normal VL53L1X library access
                         try:
-                            # Check if data is ready (with timeout handling)
-                            data_ready = False
-                            try:
-                                data_ready = sensor.check_for_data_ready()
-                            except Exception as e:
-                                if 'timeout' in str(e).lower():
-                                    # This is normal, just skip this reading
-                                    continue
-                                else:
-                                    # Re-raise other errors
-                                    raise
-                                
-                            if data_ready:
+                            # Check if data is ready (with adaptations for different library versions)
+                            distance = None
+                            
+                            if hasattr(sensor, 'check_for_data_ready'):
+                                # Standard method
+                                try:
+                                    data_ready = sensor.check_for_data_ready()
+                                    if not data_ready:
+                                        continue
+                                except Exception as e:
+                                    if 'timeout' in str(e).lower():
+                                        # This is normal, just skip this reading
+                                        continue
+                                    else:
+                                        # Re-raise other errors
+                                        raise
+                                        
                                 # Get the distance
                                 distance = sensor.get_distance()
                                 
                                 # Clear the interrupt
                                 sensor.clear_interrupt()
+                            
+                            elif hasattr(sensor, 'get_distance'):
+                                # Direct distance method (common in other libraries)
+                                distance = sensor.get_distance()
                                 
+                            elif hasattr(sensor, 'range_mm'):
+                                # Some libraries use range_mm property
+                                distance = sensor.range_mm
+                                
+                            elif hasattr(sensor, 'get_ranging_data'):
+                                # Some libraries use get_ranging_data method
+                                data = sensor.get_ranging_data()
+                                distance = data.distance_mm if hasattr(data, 'distance_mm') else None
+                                
+                            # If we successfully got a distance
+                            if distance is not None:
                                 # Add to scan data
                                 scan_data.append({
                                     'channel': channel,
