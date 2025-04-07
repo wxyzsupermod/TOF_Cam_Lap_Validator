@@ -28,6 +28,7 @@ class ToFValidator:
         self.scan_lock = threading.Lock()  # Add a lock for thread-safe data access
         self.working_channels = []
         self.direct_mode = False  # If True, bypass multiplexer and connect directly to sensors
+        self.use_direct_i2c = False  # If True, use direct I2C commands instead of VL53L1X library
         
         # Add utility function to dump module version information
         try:
@@ -42,6 +43,50 @@ class ToFValidator:
             self.rhapi.ui.message_notify(f"Module versions: {versions}")
         except:
             pass
+            
+        # VL53L1X sensor constants for direct I2C access
+        self.VL53L1X_ADDR = 0x29
+        self.SOFT_RESET = 0x0000
+        self.VL53L1_I2C_SLAVE__DEVICE_ADDRESS = 0x0001
+        self.VL53L1_VHV_CONFIG__TIMEOUT_MACROP_LOOP_BOUND = 0x0008
+        self.ALGO__CROSSTALK_COMPENSATION_PLANE_OFFSET_KCPS = 0x0016
+        self.ALGO__CROSSTALK_COMPENSATION_X_PLANE_GRADIENT_KCPS = 0x0018
+        self.ALGO__CROSSTALK_COMPENSATION_Y_PLANE_GRADIENT_KCPS = 0x001A
+        self.ALGO__PART_TO_PART_RANGE_OFFSET_MM = 0x001E
+        self.MM_CONFIG__INNER_OFFSET_MM = 0x0020
+        self.MM_CONFIG__OUTER_OFFSET_MM = 0x0022
+        self.GPIO_HV_MUX__CTRL = 0x0030
+        self.GPIO__TIO_HV_STATUS = 0x0031
+        self.SYSTEM__INTERRUPT_CONFIG_GPIO = 0x0046
+        self.PHASECAL_CONFIG__TIMEOUT_MACROP = 0x004B
+        self.RANGE_CONFIG__TIMEOUT_MACROP_A_HI = 0x005E
+        self.RANGE_CONFIG__VCSEL_PERIOD_A = 0x0060
+        self.RANGE_CONFIG__VCSEL_PERIOD_B = 0x0063
+        self.RANGE_CONFIG__TIMEOUT_MACROP_B_HI = 0x0061
+        self.RANGE_CONFIG__TIMEOUT_MACROP_B_LO = 0x0062
+        self.RANGE_CONFIG__SIGMA_THRESH = 0x0064
+        self.RANGE_CONFIG__MIN_COUNT_RATE_RTN_LIMIT_MCPS = 0x0066
+        self.RANGE_CONFIG__VALID_PHASE_HIGH = 0x0069
+        self.SYSTEM__INTERMEASUREMENT_PERIOD = 0x006C
+        self.SYSTEM__THRESH_HIGH = 0x0072
+        self.SYSTEM__THRESH_LOW = 0x0074
+        self.SD_CONFIG__WOI_SD0 = 0x0078
+        self.SD_CONFIG__INITIAL_PHASE_SD0 = 0x007A
+        self.ROI_CONFIG__USER_ROI_CENTRE_SPAD = 0x007C
+        self.ROI_CONFIG__USER_ROI_REQUESTED_GLOBAL_XY_SIZE = 0x007E
+        self.SYSTEM__SEQUENCE_CONFIG = 0x0081
+        self.VL53L1_SYSTEM__GROUPED_PARAMETER_HOLD = 0x0082
+        self.SYSTEM__INTERRUPT_CLEAR = 0x0086
+        self.SYSTEM__MODE_START = 0x0087
+        self.VL53L1_RESULT__RANGE_STATUS = 0x0089
+        self.VL53L1_RESULT__DSS_ACTUAL_EFFECTIVE_SPADS_SD0 = 0x008C
+        self.RESULT__AMBIENT_COUNT_RATE_MCPS_SD = 0x0090
+        self.VL53L1_RESULT__FINAL_CROSSTALK_CORRECTED_RANGE_MM_SD0 = 0x0096
+        self.VL53L1_RESULT__PEAK_SIGNAL_COUNT_RATE_CROSSTALK_CORRECTED_MCPS_SD0 = 0x0098
+        self.VL53L1_RESULT__OSC_CALIBRATE_VAL = 0x00DE
+        self.VL53L1_FIRMWARE__SYSTEM_STATUS = 0x00E5
+        self.VL53L1_IDENTIFICATION__MODEL_ID = 0x010F
+        self.VL53L1_ROI_CONFIG__MODE_ROI_CENTRE_SPAD = 0x013E
         
         # Register options
         i2c_bus_field = UIField('tof_i2c_bus', 'I2C Bus Number', UIFieldType.BASIC_INT, 
@@ -63,6 +108,10 @@ class ToFValidator:
         direct_mode_field = UIField('tof_direct_mode', 'Direct Mode (No Multiplexer)', UIFieldType.CHECKBOX,
                     value=False,
                     desc='Enable to bypass multiplexer and connect directly to a single VL53L1X sensor')
+                    
+        direct_i2c_field = UIField('tof_direct_i2c', 'Use Direct I2C Access', UIFieldType.CHECKBOX,
+                    value=False,
+                    desc='Enable to use direct I2C commands instead of the VL53L1X library')
 
         # Register all options
         self.rhapi.fields.register_option(i2c_bus_field, 'tof_control')
@@ -70,6 +119,7 @@ class ToFValidator:
         self.rhapi.fields.register_option(channels_field, 'tof_control')
         self.rhapi.fields.register_option(distance_field, 'tof_control')
         self.rhapi.fields.register_option(direct_mode_field, 'tof_control')
+        self.rhapi.fields.register_option(direct_i2c_field, 'tof_control')
         
         # Add help text with markdown
         self.rhapi.ui.register_markdown('tof_control', 'tof_help', """
@@ -316,6 +366,16 @@ If you're seeing I/O errors:
             direct_mode_option = self.rhapi.db.option('tof_direct_mode')
             self.direct_mode = str(direct_mode_option).lower() == 'true' if direct_mode_option is not None else False
             
+            # Check if direct I2C access is enabled
+            direct_i2c_option = self.rhapi.db.option('tof_direct_i2c')
+            self.use_direct_i2c = str(direct_i2c_option).lower() == 'true' if direct_i2c_option is not None else False
+            
+            # Log the modes
+            if self.direct_mode:
+                self.rhapi.ui.message_notify('Direct mode enabled - bypassing multiplexer')
+            if self.use_direct_i2c:
+                self.rhapi.ui.message_notify('Direct I2C access enabled - bypassing VL53L1X library')
+            
             # Initialize I2C bus
             self.bus = smbus2.SMBus(bus_num)
             self.sensors = []
@@ -323,25 +383,66 @@ If you're seeing I/O errors:
             if self.direct_mode:
                 # In direct mode, we just connect to a single sensor directly
                 self.rhapi.ui.message_notify('Direct mode enabled - connecting directly to VL53L1X sensor')
-                try:
-                    # Initialize sensor
-                    sensor = VL53L1X(i2c_bus=self.bus)
-                    sensor.open()
-                    # Set timing budget (33ms is default)
-                    sensor.set_timing_budget_in_ms(33)
-                    # Set inter-measurement period (must be >= timing budget)
-                    sensor.set_inter_measurement_in_ms(33)
-                    # Start ranging
-                    sensor.start_ranging()
+                
+                if self.use_direct_i2c:
+                    # Use direct I2C commands instead of the VL53L1X library
+                    self.rhapi.ui.message_notify('Using direct I2C commands for sensor access')
                     
-                    # Store the sensor
-                    self.sensors.append({
-                        'channel': -1,  # -1 indicates direct mode
-                        'sensor': sensor
-                    })
-                    self.rhapi.ui.message_notify('Initialized single ToF sensor in direct mode')
-                except Exception as e:
-                    self.rhapi.ui.message_alert(f'Failed to initialize sensor in direct mode: {str(e)}')
+                    if self._init_vl53l1x_direct():
+                        # Store a placeholder for the sensor
+                        self.sensors.append({
+                            'channel': -1,  # -1 indicates direct mode
+                            'direct_i2c': True  # Flag to use direct I2C access
+                        })
+                        self.rhapi.ui.message_notify('Initialized single ToF sensor in direct I2C mode')
+                    else:
+                        self.rhapi.ui.message_alert('Failed to initialize sensor with direct I2C')
+                
+                else:
+                    # Use the VL53L1X library
+                    try:
+                        # Initialize sensor
+                        self.rhapi.ui.message_notify('Using VL53L1X library...')
+                        
+                        # Try different initialization approaches
+                        sensor = None
+                        try:
+                            sensor = VL53L1X(i2c_bus=self.bus)
+                            self.rhapi.ui.message_notify('First method succeeded')
+                        except Exception as e:
+                            self.rhapi.ui.message_notify(f'First method failed: {str(e)}')
+                            
+                            try:
+                                sensor = VL53L1X(i2c_dev=self.bus)
+                                self.rhapi.ui.message_notify('Second method succeeded')
+                            except Exception as e2:
+                                self.rhapi.ui.message_notify(f'Second method failed: {str(e2)}')
+                                
+                                try:
+                                    sensor = VL53L1X()
+                                    self.rhapi.ui.message_notify('Third method succeeded')
+                                except Exception as e3:
+                                    self.rhapi.ui.message_notify(f'Third method failed: {str(e3)}')
+                                    self.rhapi.ui.message_alert('All initialization methods failed')
+                                    raise Exception("Could not initialize VL53L1X sensor with any method") from e
+                        
+                        if sensor:
+                            sensor.open()
+                            # Set timing budget (33ms is default)
+                            sensor.set_timing_budget_in_ms(33)
+                            # Set inter-measurement period (must be >= timing budget)
+                            sensor.set_inter_measurement_in_ms(33)
+                            # Start ranging
+                            sensor.start_ranging()
+                            
+                            # Store the sensor
+                            self.sensors.append({
+                                'channel': -1,  # -1 indicates direct mode
+                                'sensor': sensor
+                            })
+                            self.rhapi.ui.message_notify('Initialized single ToF sensor in direct mode')
+                    except Exception as e:
+                        self.rhapi.ui.message_alert(f'Failed to initialize sensor in direct mode: {str(e)}')
                     
             else:
                 # Normal multiplexer mode
@@ -373,8 +474,26 @@ If you're seeing I/O errors:
                     
                     if selected:
                         try:
-                            # Initialize sensor
-                            sensor = VL53L1X(i2c_bus=self.bus)
+                            # Initialize sensor with direct bus access
+                            self.rhapi.ui.message_notify(f'  Creating VL53L1X sensor object...')
+                            # Try different initialization approaches
+                            try:
+                                # First, try with default initialization
+                                sensor = VL53L1X(i2c_bus=self.bus)
+                            except Exception as e:
+                                self.rhapi.ui.message_notify(f'  First initialization method failed: {str(e)}')
+                                try:
+                                    # Try alternative initialization if available (depends on VL53L1X library version)
+                                    sensor = VL53L1X(i2c_dev=self.bus)
+                                except Exception as e2:
+                                    self.rhapi.ui.message_notify(f'  Second initialization method failed: {str(e2)}')
+                                    try:
+                                        # Last resort - try without specifying bus, using default I2C
+                                        sensor = VL53L1X()
+                                    except Exception as e3:
+                                        # If all approaches fail, re-raise the original error
+                                        self.rhapi.ui.message_alert(f'  All initialization methods failed')
+                                        raise e
                             
                             # Open the sensor with debug info
                             self.rhapi.ui.message_notify(f'  Opening sensor on channel {channel}...')
@@ -548,6 +667,29 @@ If you're seeing I/O errors:
                                 # Skip this sensor if we couldn't select its channel
                                 continue
                         
+                        # Check for direct I2C access
+                        if sensor_info.get('direct_i2c', False):
+                            try:
+                                # Get the distance using direct I2C commands
+                                distance = self._get_distance_direct()
+                                
+                                if distance is not None:
+                                    # Add to scan data
+                                    scan_data.append({
+                                        'channel': channel,
+                                        'distance': distance
+                                    })
+                                    
+                                    # Check for detections
+                                    if distance < self.detection_threshold:
+                                        detection = True
+                            except Exception as e:
+                                self.rhapi.ui.message_alert(f'Error reading direct I2C sensor: {str(e)}')
+                                # Don't spam the UI with repeated errors
+                                gevent.sleep(1)
+                            continue
+                                    
+                        # Normal VL53L1X library access
                         try:
                             # Check if data is ready (with timeout handling)
                             data_ready = False
