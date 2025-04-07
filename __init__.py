@@ -307,13 +307,14 @@ If you're seeing I/O errors:
                     pass
     
     def initialize_sensors(self):
-        """Initialize all ToF sensors on the active channels with direct mode support"""
+        """Initialize all ToF sensors on the active channels with direct mode support and partial failure handling"""
         try:
             # Get I2C bus number
             bus_num = int(self.rhapi.db.option('tof_i2c_bus'))
             
-            # Check if direct mode is enabled
-            self.direct_mode = self.rhapi.db.option('tof_direct_mode').lower() == 'true'
+            # Check if direct mode is enabled (with None protection)
+            direct_mode_option = self.rhapi.db.option('tof_direct_mode')
+            self.direct_mode = str(direct_mode_option).lower() == 'true' if direct_mode_option is not None else False
             
             # Initialize I2C bus
             self.bus = smbus2.SMBus(bus_num)
@@ -359,7 +360,18 @@ If you're seeing I/O errors:
                 # Try to initialize each sensor
                 for channel in channels:
                     self.rhapi.ui.message_notify(f'Initializing sensor on channel {channel}...')
-                    if self.select_channel(channel):
+                    # Add a delay between channel initializations to prevent I2C bus conflicts
+                    time.sleep(0.5)
+                    
+                    # Try multiple times to select the channel
+                    selected = False
+                    for retry in range(3):
+                        if self.select_channel(channel):
+                            selected = True
+                            break
+                        time.sleep(0.2)
+                    
+                    if selected:
                         try:
                             # Initialize sensor
                             sensor = VL53L1X(i2c_bus=self.bus)
@@ -389,9 +401,17 @@ If you're seeing I/O errors:
             # Return success if we initialized at least one sensor
             if len(self.sensors) > 0:
                 self.rhapi.ui.message_notify(f'Successfully initialized {len(self.sensors)} ToF sensors')
+                if len(self.sensors) < len(channels) and not self.direct_mode:
+                    self.rhapi.ui.message_notify(f'Note: Only {len(self.sensors)} out of {len(channels)} requested channels are working')
                 return True
             else:
                 self.rhapi.ui.message_alert('Failed to initialize any ToF sensors')
+                # Provide troubleshooting guidance
+                self.rhapi.ui.message_notify('Troubleshooting tips:')
+                self.rhapi.ui.message_notify('1. Try enabling Direct Mode in settings if you have a single sensor')
+                self.rhapi.ui.message_notify('2. Run "i2cdetect -y 1" to check connected devices')
+                self.rhapi.ui.message_notify('3. Verify multiplexer address (usually 0x70)')
+                self.rhapi.ui.message_notify('4. Check physical connections (power and data wires)')
                 return False
         
         except Exception as e:
@@ -419,37 +439,80 @@ If you're seeing I/O errors:
             self.rhapi.ui.message_alert(f'Failed to start ToF sensors: {str(e)}')
             
     def stop_sensors(self, args=None):
-        """Stop the ToF sensor scanning process."""
+        """Stop the ToF sensor scanning process with improved error handling."""
         if not self.is_running:
             return
             
+        self.rhapi.ui.message_notify('Stopping ToF sensors...')
+        
+        # Set the flag first to stop scan loop
         self.is_running = False
+        
+        # Stop the scanning greenlet
         if self.scanning_greenlet:
-            self.scanning_greenlet.kill()
+            try:
+                self.scanning_greenlet.kill()
+            except Exception as e:
+                self.rhapi.ui.message_notify(f'Note: {str(e)}')
             self.scanning_greenlet = None
-            
-        # Stop and close all sensors
+        
+        # Stop and close all sensors with better error handling
         for sensor_info in self.sensors:
             try:
                 channel = sensor_info['channel']
                 sensor = sensor_info['sensor']
-                if self.select_channel(channel):
-                    sensor.stop_ranging()
-                    sensor.close()
+                
+                # For direct mode or to handle a defective multiplexer
+                if channel == -1 or self.direct_mode:
+                    try:
+                        sensor.stop_ranging()
+                        sensor.close()
+                    except Exception as e:
+                        self.rhapi.ui.message_notify(f'Note when stopping direct sensor: {str(e)}')
+                else:
+                    # Try multiple times to select the channel
+                    selected = False
+                    for retry in range(3):
+                        if self.select_channel(channel):
+                            selected = True
+                            break
+                        time.sleep(0.2)
+                    
+                    if selected:
+                        try:
+                            sensor.stop_ranging()
+                            time.sleep(0.1)
+                            sensor.close()
+                        except Exception as e:
+                            self.rhapi.ui.message_notify(f'Note when stopping sensor on channel {channel}: {str(e)}')
+                    else:
+                        self.rhapi.ui.message_notify(f'Could not select channel {channel} to stop sensor properly')
             except Exception as e:
-                self.rhapi.ui.message_alert(f'Error stopping sensor on channel {channel}: {str(e)}')
+                if 'channel' in locals():
+                    channel_desc = "direct" if channel == -1 else f"channel {channel}"
+                    self.rhapi.ui.message_notify(f'Error stopping sensor on {channel_desc}: {str(e)}')
+                else:
+                    self.rhapi.ui.message_notify(f'Error stopping sensor: {str(e)}')
         
         self.sensors = []
         
         # Close I2C bus
         if self.bus:
             try:
+                # Reset the multiplexer if possible
+                try:
+                    if not self.direct_mode:
+                        self.bus.write_byte(TCA9548A_ADDRESS, 0)
+                except:
+                    pass
+                
+                # Close the bus
                 self.bus.close()
                 self.bus = None
             except Exception as e:
-                self.rhapi.ui.message_alert(f'Error closing I2C bus: {str(e)}')
+                self.rhapi.ui.message_notify(f'Note when closing I2C bus: {str(e)}')
             
-        self.rhapi.ui.message_notify('ToF sensors stopped')
+        self.rhapi.ui.message_notify('ToF sensors stopped successfully')
         
     def scan_loop(self):
         """Main ToF sensor scanning loop with improved error handling."""
@@ -472,7 +535,17 @@ If you're seeing I/O errors:
                         
                         # In direct mode (channel = -1), we don't need to select a channel
                         if channel >= 0 and not self.direct_mode:
-                            if not self.select_channel(channel):
+                            # Try multiple times to select channel with increasing delays
+                            channel_selected = False
+                            for retry in range(3):
+                                if self.select_channel(channel):
+                                    channel_selected = True
+                                    break
+                                # Increasing delay between retries
+                                gevent.sleep(0.1 * (retry + 1))
+                                
+                            if not channel_selected:
+                                # Skip this sensor if we couldn't select its channel
                                 continue
                         
                         try:
