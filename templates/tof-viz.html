@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>ToF Camera Visualization</title>
+    <title>ToF Sensor Visualization</title>
     <!-- Load React dependencies -->
     <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
@@ -22,52 +22,144 @@
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-left: 8px;
-        }
-        .status-active {
-            background-color: #28a745;
-        }
-        .status-inactive {
-            background-color: #dc3545;
-        }
-        .legend {
-            display: flex;
-            justify-content: space-between;
-            margin-top: 15px;
-            padding: 10px;
-            background: #f8f9fa;
+        .sensor-bar {
+            height: 30px;
+            margin: 10px 0;
+            background: #e9ecef;
+            position: relative;
             border-radius: 4px;
+            overflow: hidden;
         }
-        .legend-item {
-            display: flex;
-            align-items: center;
-            margin-right: 15px;
+        .sensor-fill {
+            height: 100%;
+            background: #0d6efd;
+            transition: width 0.3s ease;
         }
-        .legend-color {
-            width: 15px;
-            height: 15px;
-            margin-right: 5px;
-            border-radius: 2px;
+        .sensor-threshold {
+            position: absolute;
+            top: 0;
+            height: 100%;
+            border-right: 2px dashed #dc3545;
         }
-        .controls {
-            margin: 15px 0;
-            padding: 10px;
-            background: #f8f9fa;
-            border-radius: 4px;
+        .sensor-label {
+            position: absolute;
+            right: 10px;
+            top: 5px;
+            color: #495057;
+            font-weight: bold;
+        }
+        .sensor-value {
+            position: absolute;
+            left: 10px;
+            top: 5px;
+            color: white;
+            z-index: 1;
+            font-weight: bold;
         }
     </style>
 </head>
 <body>
     <!-- Add a loading message -->
-    <div id="root">Loading ToF camera visualization...</div>
+    <div id="root">Loading ToF sensor visualization...</div>
 
-    <!-- Updated static path to match the blueprint configuration -->
-    <script type="text/babel" src="/static/tof-viz/tof-viz.js"></script>
+    <!-- Script for visualization -->
+    <script type="text/babel">
+        // Destructure React hooks from React
+        const { useState, useEffect } = React;
+
+        // ToF Visualization Component
+        const ToFVisualization = () => {
+          const [sensorData, setSensorData] = useState([]);
+          const [threshold, setThreshold] = useState(1000);
+          const [error, setError] = useState(null);
+          const maxDistance = 4000; // Maximum distance to show (mm)
+
+          useEffect(() => {
+            const fetchData = async () => {
+              try {
+                const response = await fetch('/tof/data');
+                const data = await response.json();
+                
+                if (data.error) {
+                  setError(data.error);
+                } else {
+                  setSensorData(data.scan);
+                  setThreshold(data.threshold);
+                }
+              } catch (err) {
+                setError('Failed to fetch ToF data: ' + err.message);
+              }
+            };
+
+            fetchData();
+            const interval = setInterval(fetchData, 300); // Update every 300ms
+            return () => clearInterval(interval);
+          }, []);
+
+          return (
+            <div className="tof-container">
+              <h2>ToF Sensor Visualization</h2>
+              {error ? (
+                <div style={{ color: 'red' }}>{error}</div>
+              ) : (
+                <div>
+                  <div className="sensor-info">
+                    <p>Detection threshold: <strong>{threshold} mm</strong></p>
+                    <p>Sensors active: <strong>{sensorData.length}</strong></p>
+                  </div>
+                  
+                  {sensorData.map((sensor, index) => (
+                    <div key={index} className="sensor-item">
+                      <h4>Sensor on Channel {sensor.channel}</h4>
+                      <div className="sensor-bar">
+                        <div 
+                          className="sensor-fill" 
+                          style={{ 
+                            width: `${Math.min(100, (sensor.distance / maxDistance) * 100)}%`,
+                            backgroundColor: sensor.distance < threshold ? '#dc3545' : '#0d6efd'
+                          }}
+                        ></div>
+                        <div 
+                          className="sensor-threshold"
+                          style={{ left: `${(threshold / maxDistance) * 100}%` }}
+                        ></div>
+                        <div className="sensor-value">
+                          {sensor.distance} mm
+                        </div>
+                        <div className="sensor-label">
+                          Channel {sensor.channel}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  
+                  {sensorData.length === 0 && (
+                    <div>No sensor data available</div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        // Initialize React
+        try {
+          console.log('Initializing React component...');
+          const rootElement = document.getElementById('root');
+          if (!rootElement) {
+              throw new Error('Root element not found!');
+          }
+          ReactDOM.render(<ToFVisualization />, rootElement);
+          console.log('React component initialized');
+        } catch (err) {
+          console.error('Failed to initialize React:', err);
+          document.getElementById('root').innerHTML = 
+              `<div style="color: red;">
+                  Failed to initialize visualization: ${err.message}<br>
+                  Check browser console for details.
+              </div>`;
+        }
+    </script>
     
     <!-- Add error handling -->
     <script>
